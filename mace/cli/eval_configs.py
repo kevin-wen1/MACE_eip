@@ -189,6 +189,8 @@ def run(args: argparse.Namespace) -> None:
     bec_list = []
     qs_list = []
     forces_collection = []
+    energy_uncertainty_list = []
+    forces_uncertainty_collection = []
 
     for batch in data_loader:
         batch = batch.to(device)
@@ -268,11 +270,38 @@ def run(args: argparse.Namespace) -> None:
         )
         forces_collection.append(forces[:-1])  # drop last as its empty
 
+        # Collect uncertainty if available
+        if output.get("energy_uncertainty") is not None:
+            energy_uncertainty_list.append(torch_tools.to_numpy(output["energy_uncertainty"]))
+
+        if output.get("forces_uncertainty") is not None:
+            forces_uncertainty = np.split(
+                torch_tools.to_numpy(output["forces_uncertainty"]),
+                indices_or_sections=batch.ptr[1:],
+                axis=0,
+            )
+            forces_uncertainty_collection.append(forces_uncertainty[:-1])
+
     energies = np.concatenate(energies_list, axis=0)
     forces_list = [
         forces for forces_list in forces_collection for forces in forces_list
     ]
     assert len(atoms_list) == len(energies) == len(forces_list)
+
+    # Process uncertainty if available
+    has_energy_uncertainty = len(energy_uncertainty_list) > 0
+    has_forces_uncertainty = len(forces_uncertainty_collection) > 0
+
+    if has_energy_uncertainty:
+        energy_uncertainties = np.concatenate(energy_uncertainty_list, axis=0)
+        assert len(atoms_list) == len(energy_uncertainties)
+
+    if has_forces_uncertainty:
+        forces_uncertainty_list = [
+            forces_unc for forces_unc_list in forces_uncertainty_collection
+            for forces_unc in forces_unc_list
+        ]
+        assert len(atoms_list) == len(forces_uncertainty_list)
     if args.compute_stress:
         stresses = np.concatenate(stresses_list, axis=0)
         assert len(atoms_list) == stresses.shape[0]
@@ -298,6 +327,13 @@ def run(args: argparse.Namespace) -> None:
         atoms.calc = None  # crucial
         atoms.info[args.info_prefix + "energy"] = energy
         atoms.arrays[args.info_prefix + "forces"] = forces
+
+        # Store uncertainty if available
+        if has_energy_uncertainty:
+            atoms.info[args.info_prefix + "energy_uncertainty"] = energy_uncertainties[i]
+
+        if has_forces_uncertainty:
+            atoms.arrays[args.info_prefix + "forces_uncertainty"] = forces_uncertainty_list[i]
 
         if args.compute_stress:
             atoms.info[args.info_prefix + "stress"] = stresses[i]

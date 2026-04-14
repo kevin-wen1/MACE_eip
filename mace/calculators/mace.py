@@ -377,6 +377,8 @@ class MACECalculator(Calculator):
             "charges": [num_atoms],
             "polarizability": [3, 3],
             "polarizability_sh": [6],
+            "energy_uncertainty": [],
+            "forces_uncertainty": [num_atoms, 3],
         }
         if self.model_type == "PolarMACE":
             tensor_shapes.update(
@@ -508,6 +510,8 @@ class MACECalculator(Calculator):
             ("charges", "charges", 1.0),
             ("polarizability", "polarizability", 1.0),
             ("polarizability_sh", "polarizability_sh", 1.0),
+            ("energy_uncertainty", "energy_uncertainty", self.energy_units_to_eV),
+            ("forces_uncertainty", "forces_uncertainty", self.energy_units_to_eV / self.length_units_to_A),
         ]
         if self.model_type == "PolarMACE":
             results_map.extend(

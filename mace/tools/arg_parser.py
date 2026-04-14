@@ -764,7 +764,26 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
             "universal",
             "energy_forces_dipole",
             "l1l2energyforces",
+            "uncertainty_weighted",
         ],
+    )
+    parser.add_argument(
+        "--use_uncertainty",
+        help="enable uncertainty quantification (EIP-style)",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--eip_quantile",
+        help="quantile for EIP quantile regression (default: 0.5 for median)",
+        type=float,
+        default=0.5,
+    )
+    parser.add_argument(
+        "--eip_lambda_reg",
+        help="regularization coefficient for EIP evidence regularizer (default: 0.01)",
+        type=float,
+        default=0.01,
     )
     parser.add_argument(
         "--forces_weight", help="weight of forces loss", type=float, default=100.0

@@ -124,6 +124,7 @@ def configure_model(
         elif args.model in ("MACE", "ScaleShiftMACE"):
             args.model = "FoundationMACE"
         model_config_foundation["heads"] = heads
+        model_config_foundation["use_uncertainty"] = getattr(args, 'use_uncertainty', False)
         model_config = model_config_foundation
 
         logging.info("Model configuration extracted from foundation model")
@@ -263,6 +264,7 @@ def _build_model(
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
             use_agnostic_product=args.use_agnostic_product,
+            use_uncertainty=args.use_uncertainty if hasattr(args, 'use_uncertainty') else False,
         )
     if args.model == "ScaleShiftMACE":
         return modules.ScaleShiftMACE(
@@ -282,6 +284,7 @@ def _build_model(
             use_embedding_readout=args.use_embedding_readout,
             use_last_readout_only=args.use_last_readout_only,
             use_agnostic_product=args.use_agnostic_product,
+            use_uncertainty=args.use_uncertainty if hasattr(args, 'use_uncertainty') else False,
         )
     if args.model == "PolarMACE" and model_config_foundation is not None:
         return modules.PolarMACE(**model_config_foundation)

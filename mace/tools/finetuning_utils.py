@@ -290,6 +290,79 @@ def load_foundations_elements(
                         readout.linear_2.bias = torch.nn.Parameter(
                             model_readouts_one_linear_2_bias
                         )
+
+                # Handle uncertainty parameters if present
+                # If target model has uncertainty but foundation doesn't, initialize it
+                if hasattr(readout, "linear_uncertainty"):
+                    if hasattr(model_foundations.readouts[i], "linear_uncertainty"):
+                        # Both have uncertainty, transfer weights
+                        model_readouts_uncertainty_weight = readout.linear_uncertainty.weight.clone()
+                        model_readouts_uncertainty_weight = model_foundations.readouts[
+                            i
+                        ].linear_uncertainty.weight.view(shape_input_1, -1).repeat(
+                            len(model_heads), len(model_heads)
+                        ).flatten().clone() / (
+                            ((shape_input_1) / (shape_output_1)) ** 0.5
+                        )
+                        readout.linear_uncertainty.weight = torch.nn.Parameter(
+                            model_readouts_uncertainty_weight
+                        )
+                        if readout.linear_uncertainty.bias is not None:
+                            model_readouts_uncertainty_bias = readout.linear_uncertainty.bias.clone()
+                            model_readouts_uncertainty_bias = (
+                                model_foundations.readouts[i]
+                                .linear_uncertainty.bias.view(-1)
+                                .repeat(len(model_heads))
+                                .flatten()
+                                .clone()
+                            )
+                            readout.linear_uncertainty.bias = torch.nn.Parameter(
+                                model_readouts_uncertainty_bias
+                            )
+                    else:
+                        # Target has uncertainty but foundation doesn't
+                        # EIP: Initialize NIG parameters (nu, alpha, beta)
+                        import logging
+                        logging.info(
+                            f"Foundation model doesn't have uncertainty parameters. "
+                            f"Initializing readout {i} EIP NIG parameters."
+                        )
+
+                        # Check if this is EIP model (has 3 NIG parameters: nu, alpha, beta)
+                        if hasattr(readout, 'linear_nu'):
+                            # EIP model: initialize 3 NIG parameter heads
+                            for param_name, init_bias in [
+                                ('linear_nu', 1.0),
+                                ('linear_alpha', 1.0),
+                                ('linear_beta', -3.0),
+                            ]:
+                                param_linear = getattr(readout, param_name)
+                                if hasattr(param_linear, 'weight'):
+                                    weight = param_linear.weight
+                                    if weight.ndim >= 2:
+                                        torch.nn.init.kaiming_normal_(
+                                            weight,
+                                            mode='fan_in',
+                                            nonlinearity='relu'
+                                        )
+                                    else:
+                                        torch.nn.init.normal_(weight, mean=0.0, std=0.1)
+                                if hasattr(param_linear, 'bias') and param_linear.bias is not None:
+                                    torch.nn.init.constant_(param_linear.bias, init_bias)
+                        elif hasattr(readout, 'linear_uncertainty'):
+                            # Old model: single log_var parameter
+                            if hasattr(readout.linear_uncertainty, 'weight'):
+                                weight = readout.linear_uncertainty.weight
+                                if weight.ndim >= 2:
+                                    torch.nn.init.kaiming_normal_(
+                                        weight,
+                                        mode='fan_in',
+                                        nonlinearity='relu'
+                                    )
+                                else:
+                                    torch.nn.init.normal_(weight, mean=0.0, std=1.0)
+                            if hasattr(readout.linear_uncertainty, 'bias') and readout.linear_uncertainty.bias is not None:
+                                torch.nn.init.constant_(readout.linear_uncertainty.bias, -5.0)
     _handled_attrs = {"interactions", "products", "readouts"}
     for attr_name, module in model.named_children():
         if attr_name in _handled_attrs:

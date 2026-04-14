@@ -665,6 +665,15 @@ def get_loss_fn(
         loss_fn = modules.WeightedEnergyForcesLoss(
             energy_weight=args.energy_weight, forces_weight=args.forces_weight
         )
+    elif args.loss == "uncertainty_weighted":
+        from mace.modules.loss_uncertainty import UncertaintyWeightedEnergyForcesLoss
+        loss_fn = UncertaintyWeightedEnergyForcesLoss(
+            energy_weight=args.energy_weight,
+            forces_weight=args.forces_weight,
+            use_uncertainty=args.use_uncertainty,
+            quantile=getattr(args, 'eip_quantile', 0.5),
+            lambda_reg=getattr(args, 'eip_lambda_reg', 0.01),
+        )
     elif args.loss == "forces_only":
         loss_fn = modules.WeightedForcesLoss(forces_weight=args.forces_weight)
     elif args.loss == "virials":
@@ -674,11 +683,22 @@ def get_loss_fn(
             virials_weight=args.virials_weight,
         )
     elif args.loss == "stress":
-        loss_fn = modules.WeightedEnergyForcesStressLoss(
-            energy_weight=args.energy_weight,
-            forces_weight=args.forces_weight,
-            stress_weight=args.stress_weight,
-        )
+        if hasattr(args, 'use_uncertainty') and args.use_uncertainty:
+            from mace.modules.loss_uncertainty import UncertaintyWeightedEnergyForcesStressLoss
+            loss_fn = UncertaintyWeightedEnergyForcesStressLoss(
+                energy_weight=args.energy_weight,
+                forces_weight=args.forces_weight,
+                stress_weight=args.stress_weight,
+                use_uncertainty=args.use_uncertainty,
+                quantile=getattr(args, 'eip_quantile', 0.5),
+                lambda_reg=getattr(args, 'eip_lambda_reg', 0.01),
+            )
+        else:
+            loss_fn = modules.WeightedEnergyForcesStressLoss(
+                energy_weight=args.energy_weight,
+                forces_weight=args.forces_weight,
+                stress_weight=args.stress_weight,
+            )
     elif args.loss == "huber":
         loss_fn = modules.WeightedHuberEnergyForcesStressLoss(
             energy_weight=args.energy_weight,

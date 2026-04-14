@@ -6,6 +6,7 @@
 
 from abc import abstractmethod
 from typing import Any, Callable, List, Optional, Tuple, Union
+import torch
 
 import numpy as np
 import torch.nn.functional
@@ -90,10 +91,12 @@ class NonLinearReadoutBlock(torch.nn.Module):
         num_heads: int = 1,
         cueq_config: Optional[CuEquivarianceConfig] = None,
         oeq_config: Optional[OEQConfig] = None,  # pylint: disable=unused-argument
+        use_uncertainty: bool = False,
     ):
         super().__init__()
         self.hidden_irreps = MLP_irreps
         self.num_heads = num_heads
+        self.use_uncertainty = use_uncertainty
         self.linear_1 = Linear(
             irreps_in=irreps_in, irreps_out=self.hidden_irreps, cueq_config=cueq_config
         )
@@ -103,15 +106,75 @@ class NonLinearReadoutBlock(torch.nn.Module):
         self.linear_2 = Linear(
             irreps_in=self.hidden_irreps, irreps_out=irrep_out, cueq_config=cueq_config
         )
+        # EIP: Add 3 scalar NIG parameters per atom (nu, alpha, beta)
+        # These are isotropic (rotation-invariant) uncertainty parameters
+        # Output: 3 scalars per atom, NOT per force component
+        if use_uncertainty:
+            # Extract only scalar (L=0) features for rotation invariance
+            # Output 3 scalars: nu, alpha, beta
+            uncertainty_irreps = o3.Irreps("3x0e")  # 3 scalars
+
+            self.linear_nu = Linear(
+                irreps_in=self.hidden_irreps,
+                irreps_out=o3.Irreps("1x0e"),  # 1 scalar for nu
+                cueq_config=cueq_config
+            )
+            self.linear_alpha = Linear(
+                irreps_in=self.hidden_irreps,
+                irreps_out=o3.Irreps("1x0e"),  # 1 scalar for alpha
+                cueq_config=cueq_config
+            )
+            self.linear_beta = Linear(
+                irreps_in=self.hidden_irreps,
+                irreps_out=o3.Irreps("1x0e"),  # 1 scalar for beta
+                cueq_config=cueq_config
+            )
+
+            # Initialize NIG parameter heads
+            for param_name, init_bias in [
+                ('linear_nu', 1.0),      # nu initialized so softplus gives ~2
+                ('linear_alpha', 1.0),   # alpha initialized so softplus gives ~2
+                ('linear_beta', -3.0),   # beta initialized for reasonable initial uncertainty
+            ]:
+                param_linear = getattr(self, param_name)
+                if hasattr(param_linear, 'weight'):
+                    w = param_linear.weight
+                    if w.dim() >= 2:
+                        torch.nn.init.kaiming_normal_(w, mode='fan_in', nonlinearity='relu')
+                    else:
+                        torch.nn.init.normal_(w, mean=0.0, std=0.1)
+                if hasattr(param_linear, 'bias') and param_linear.bias is not None:
+                    torch.nn.init.constant_(param_linear.bias, init_bias)
 
     def forward(
         self, x: torch.Tensor, heads: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:  # [n_nodes, irreps]  # [..., ]
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:  # [n_nodes, irreps]  # [..., ]
         x = self.non_linearity(self.linear_1(x))
         if hasattr(self, "num_heads"):
             if self.num_heads > 1 and heads is not None:
                 x = mask_head(x, heads, self.num_heads)
-        return self.linear_2(x)  # [n_nodes, len(heads)]
+        output = self.linear_2(x)  # [n_nodes, len(heads)]
+
+        # EIP: Output 3 scalar NIG parameters per atom for isotropic uncertainty
+        if hasattr(self, 'use_uncertainty') and self.use_uncertainty:
+            # Each atom outputs 3 scalars: nu, alpha, beta
+            # These are rotation-invariant (only use L=0 features)
+            nu_raw = self.linear_nu(x)      # [n_atoms, 1]
+            alpha_raw = self.linear_alpha(x)  # [n_atoms, 1]
+            beta_raw = self.linear_beta(x)   # [n_atoms, 1]
+
+            # Apply activation functions to ensure valid parameter ranges
+            # nu > 0: confidence (pseudo-observations)
+            nu = torch.nn.functional.softplus(nu_raw) + 1e-6
+
+            # alpha > 1: shape parameter (must be > 1 for variance to exist)
+            alpha = torch.nn.functional.softplus(alpha_raw) + 1.0 + 1e-6
+
+            # beta > 0: scale parameter
+            beta = torch.nn.functional.softplus(beta_raw) + 1e-6
+
+            return output, (nu, alpha, beta)
+        return output
 
 
 @simplify_if_compile

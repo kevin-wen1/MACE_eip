@@ -4,6 +4,7 @@
 # This program is distributed under the MIT License (see MIT.md)
 ###########################################################################################
 
+import logging
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
 import numpy as np
@@ -80,6 +81,7 @@ class MACE(torch.nn.Module):
         lammps_mliap: Optional[bool] = False,
         readout_cls: Optional[Type[NonLinearReadoutBlock]] = NonLinearReadoutBlock,
         keep_last_layer_irreps: bool = False,
+        use_uncertainty: bool = False,
     ):
         super().__init__()
         self.register_buffer(
@@ -104,6 +106,9 @@ class MACE(torch.nn.Module):
         self.use_so3 = use_so3
         self.use_last_readout_only = use_last_readout_only
         self.use_edge_irreps_first = use_edge_irreps_first
+        self.use_uncertainty = use_uncertainty
+        if use_uncertainty:
+            logging.info("Uncertainty quantification (EIP-style) is ENABLED")
 
         # Embedding
         node_attr_irreps = o3.Irreps([(num_elements, (0, 1))])
@@ -261,6 +266,7 @@ class MACE(torch.nn.Module):
                         len(heads),
                         cueq_config,
                         oeq_config,
+                        use_uncertainty,
                     )
                 )
             elif not use_last_readout_only:
@@ -384,19 +390,73 @@ class MACE(torch.nn.Module):
             )
             node_feats_concat.append(node_feats)
 
+        energies: List[torch.Tensor] = []
+        node_energies_list: List[torch.Tensor] = []
+        node_nu_list: List[torch.Tensor] = []
+        node_alpha_list: List[torch.Tensor] = []
+        node_beta_list: List[torch.Tensor] = []
+
         for i, readout in enumerate(self.readouts):
             feat_idx = -1 if len(self.readouts) == 1 else i
-            node_es = readout(node_feats_concat[feat_idx], node_heads)[
-                num_atoms_arange, node_heads
-            ]
-            energy = scatter_sum(node_es, data["batch"], dim=0, dim_size=num_graphs)
-            energies.append(energy)
-            node_energies_list.append(node_es)
+            readout_output = readout(node_feats_concat[feat_idx], node_heads)
+
+            # Handle uncertainty output - EIP: unpack NIG parameters (nu, alpha, beta)
+            use_unc = hasattr(self, 'use_uncertainty') and self.use_uncertainty
+            if use_unc and isinstance(readout_output, tuple):
+                node_es, nig_params = readout_output
+                nu, alpha, beta = nig_params
+
+                node_es = node_es[num_atoms_arange, node_heads]
+                nu = nu[num_atoms_arange, node_heads]
+                alpha = alpha[num_atoms_arange, node_heads]
+                beta = beta[num_atoms_arange, node_heads]
+
+                energy = scatter_sum(node_es, data["batch"], dim=0, dim_size=num_graphs)
+                energies.append(energy)
+                node_energies_list.append(node_es)
+                node_nu_list.append(nu)
+                node_alpha_list.append(alpha)
+                node_beta_list.append(beta)
+            else:
+                if isinstance(readout_output, tuple):
+                    # Old model loaded with new code, just use first output
+                    readout_output = readout_output[0]
+                node_es = readout_output[num_atoms_arange, node_heads]
+                energy = scatter_sum(node_es, data["batch"], dim=0, dim_size=num_graphs)
+                energies.append(energy)
+                node_energies_list.append(node_es)
 
         contributions = torch.stack(energies, dim=-1)
         total_energy = torch.sum(contributions, dim=-1)
         node_energy = torch.sum(torch.stack(node_energies_list, dim=-1), dim=-1)
         node_feats_out = torch.cat(node_feats_concat, dim=-1)
+
+        # Compute uncertainty if enabled - EIP: from NIG parameters
+        energy_uncertainty = None
+        forces_uncertainty = None
+        node_nu = None
+        node_alpha = None
+        node_beta = None
+        use_unc = hasattr(self, 'use_uncertainty') and self.use_uncertainty
+
+        if use_unc and len(node_nu_list) > 0:
+            # EIP: Aggregate NIG parameters from multiple readouts if needed
+            if len(node_nu_list) > 1:
+                node_nu = torch.sum(torch.stack(node_nu_list, dim=0), dim=0)
+                node_alpha = torch.sum(torch.stack(node_alpha_list, dim=0), dim=0)
+                node_beta = torch.sum(torch.stack(node_beta_list, dim=0), dim=0)
+            else:
+                node_nu = node_nu_list[0]
+                node_alpha = node_alpha_list[0]
+                node_beta = node_beta_list[0]
+
+            # EIP: Compute epistemic uncertainty from NIG parameters
+            # Var[μ] = β / (ν * (α - 1))
+            node_epistemic_var = node_beta / (node_nu * (node_alpha - 1.0) + 1e-10)
+
+            # System-level energy uncertainty: sum variances across atoms
+            total_epistemic_var = scatter_sum(node_epistemic_var, data["batch"], dim=0, dim_size=num_graphs)
+            energy_uncertainty = torch.sqrt(total_epistemic_var + 1e-10)
 
         forces, virials, stress, hessian, edge_forces = get_outputs(
             energy=total_energy,
@@ -411,6 +471,12 @@ class MACE(torch.nn.Module):
             compute_hessian=compute_hessian,
             compute_edge_forces=compute_edge_forces,
         )
+
+        # Compute force uncertainty if enabled - EIP: from NIG parameters
+        # EIP Step 6: total 3D uncertainty = sqrt(3 * beta / (nu * (alpha - 1)))
+        if use_unc and compute_force and len(node_nu_list) > 0:
+            forces_uncertainty_3d = torch.sqrt(3.0 * node_epistemic_var + 1e-10)
+            forces_uncertainty = forces_uncertainty_3d.unsqueeze(-1).expand(-1, 3)
 
         atomic_virials: Optional[torch.Tensor] = None
         atomic_stresses: Optional[torch.Tensor] = None
@@ -436,6 +502,13 @@ class MACE(torch.nn.Module):
             "displacement": displacement,
             "hessian": hessian,
             "node_feats": node_feats_out,
+            "energy_uncertainty": energy_uncertainty,
+            "forces_uncertainty": forces_uncertainty,
+            # EIP: Add NIG parameters for loss computation
+            # Note: gamma = forces (from energy gradient), so we don't store it separately
+            "node_nu": node_nu,
+            "node_alpha": node_alpha,
+            "node_beta": node_beta,
         }
 
 
@@ -523,8 +596,12 @@ class ScaleShiftMACE(MACE):
                 embedding_features,
             )
             if hasattr(self, "embedding_readout"):
+                embedding_readout_output = self.embedding_readout(node_feats, node_heads)
+                # Handle uncertainty output if present
+                if isinstance(embedding_readout_output, tuple):
+                    embedding_readout_output = embedding_readout_output[0]
                 embedding_node_energy = torch.atleast_1d(
-                    self.embedding_readout(node_feats, node_heads)[
+                    embedding_readout_output[
                         num_atoms_arange, node_heads
                     ].squeeze(-1)
                 )
@@ -564,13 +641,38 @@ class ScaleShiftMACE(MACE):
             )
             node_feats_list.append(node_feats)
 
+        # Track uncertainty if enabled - EIP: store NIG parameters (nu, alpha, beta)
+        # Note: gamma will be set to forces later (from energy gradient)
+        energy_log_var = None
+        node_nu_list = []
+        node_alpha_list = []
+        node_beta_list = []
+        use_unc = hasattr(self, 'use_uncertainty') and self.use_uncertainty
+
         for i, readout in enumerate(self.readouts):
             feat_idx = -1 if len(self.readouts) == 1 else i
-            node_es_list.append(
-                readout(node_feats_list[feat_idx], node_heads)[
-                    num_atoms_arange, node_heads
-                ]
-            )
+            readout_output = readout(node_feats_list[feat_idx], node_heads)
+
+            # Handle uncertainty output if present - EIP: unpack NIG parameters (nu, alpha, beta)
+            if use_unc and isinstance(readout_output, tuple):
+                node_es, nig_params = readout_output
+                nu, alpha, beta = nig_params
+
+                node_es = node_es[num_atoms_arange, node_heads]
+                nu = nu[num_atoms_arange, node_heads]
+                alpha = alpha[num_atoms_arange, node_heads]
+                beta = beta[num_atoms_arange, node_heads]
+
+                node_es_list.append(node_es)
+                node_nu_list.append(nu)
+                node_alpha_list.append(alpha)
+                node_beta_list.append(beta)
+            else:
+                if isinstance(readout_output, tuple):
+                    readout_output = readout_output[0]  # Old model, just use energy
+                node_es_list.append(
+                    readout_output[num_atoms_arange, node_heads]
+                )
 
         node_feats_out = torch.cat(node_feats_list, dim=-1)
         node_inter_es = torch.sum(torch.stack(node_es_list, dim=0), dim=0)
@@ -593,6 +695,40 @@ class ScaleShiftMACE(MACE):
             compute_hessian=compute_hessian,
             compute_edge_forces=compute_edge_forces or compute_atomic_stresses,
         )
+
+        # Compute uncertainty if enabled - EIP: from NIG parameters
+        energy_uncertainty = None
+        forces_uncertainty = None
+        node_nu = None
+        node_alpha = None
+        node_beta = None
+
+        if use_unc and len(node_nu_list) > 0:
+            # EIP: Aggregate NIG parameters from multiple readouts if needed
+            if len(node_nu_list) > 1:
+                # Multiple readouts: sum parameters (approximation)
+                node_nu = torch.sum(torch.stack(node_nu_list, dim=0), dim=0)
+                node_alpha = torch.sum(torch.stack(node_alpha_list, dim=0), dim=0)
+                node_beta = torch.sum(torch.stack(node_beta_list, dim=0), dim=0)
+            else:
+                node_nu = node_nu_list[0]
+                node_alpha = node_alpha_list[0]
+                node_beta = node_beta_list[0]
+
+            # EIP: Compute epistemic uncertainty from NIG parameters
+            # Var[μ] = β / (ν * (α - 1))
+            node_epistemic_var = node_beta / (node_nu * (node_alpha - 1.0) + 1e-10)
+
+            # System-level energy uncertainty: sum variances across atoms
+            total_epistemic_var = scatter_sum(node_epistemic_var, data["batch"], dim=-1, dim_size=num_graphs)
+            energy_uncertainty = torch.sqrt(total_epistemic_var + 1e-10)
+
+            # Force uncertainty: per-atom uncertainty
+            if compute_force:
+                node_uncertainty = torch.sqrt(node_epistemic_var + 1e-10)
+                # Replicate across 3 dimensions (x, y, z)
+                # Note: This is a simplification. Ideally each direction should have independent uncertainty
+                forces_uncertainty = node_uncertainty.unsqueeze(-1).expand(-1, 3)
 
         atomic_virials: Optional[torch.Tensor] = None
         atomic_stresses: Optional[torch.Tensor] = None
@@ -618,6 +754,13 @@ class ScaleShiftMACE(MACE):
             "hessian": hessian,
             "displacement": displacement,
             "node_feats": node_feats_out,
+            "energy_uncertainty": energy_uncertainty,
+            "forces_uncertainty": forces_uncertainty,
+            # EIP: Add NIG parameters for loss computation
+            # Note: gamma = forces (from energy gradient), so we don't store it separately
+            "node_nu": node_nu,
+            "node_alpha": node_alpha,
+            "node_beta": node_beta,
         }
 
 
