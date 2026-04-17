@@ -398,7 +398,6 @@ def train_one_epoch(
             if rank == 0:
                 logger.log(opt_metrics)
 
-
 def take_step(
     model: torch.nn.Module,
     loss_fn: torch.nn.Module,

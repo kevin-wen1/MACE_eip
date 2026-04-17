@@ -367,6 +367,8 @@ def load_foundations_elements(
     for attr_name, module in model.named_children():
         if attr_name in _handled_attrs:
             continue
+        if not hasattr(model_foundations, attr_name):
+            continue
         submodules = (
             list(zip(module, model_foundations.__dict__["_modules"][attr_name]))
             if isinstance(module, torch.nn.ModuleList)

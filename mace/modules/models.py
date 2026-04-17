@@ -432,11 +432,12 @@ class MACE(torch.nn.Module):
         node_feats_out = torch.cat(node_feats_concat, dim=-1)
 
         # Compute uncertainty if enabled - EIP: from NIG parameters
-        energy_uncertainty = None
-        forces_uncertainty = None
-        node_nu = None
-        node_alpha = None
-        node_beta = None
+        energy_uncertainty = torch.jit.annotate(Optional[torch.Tensor], None)
+        forces_uncertainty = torch.jit.annotate(Optional[torch.Tensor], None)
+        node_nu = torch.jit.annotate(Optional[torch.Tensor], None)
+        node_alpha = torch.jit.annotate(Optional[torch.Tensor], None)
+        node_beta = torch.jit.annotate(Optional[torch.Tensor], None)
+        node_epistemic_var = torch.zeros_like(node_e0)
         use_unc = hasattr(self, 'use_uncertainty') and self.use_uncertainty
 
         if use_unc and len(node_nu_list) > 0:
@@ -697,11 +698,12 @@ class ScaleShiftMACE(MACE):
         )
 
         # Compute uncertainty if enabled - EIP: from NIG parameters
-        energy_uncertainty = None
-        forces_uncertainty = None
-        node_nu = None
-        node_alpha = None
-        node_beta = None
+        energy_uncertainty = torch.jit.annotate(Optional[torch.Tensor], None)
+        forces_uncertainty = torch.jit.annotate(Optional[torch.Tensor], None)
+        node_nu = torch.jit.annotate(Optional[torch.Tensor], None)
+        node_alpha = torch.jit.annotate(Optional[torch.Tensor], None)
+        node_beta = torch.jit.annotate(Optional[torch.Tensor], None)
+        node_epistemic_var = torch.zeros_like(node_e0)
 
         if use_unc and len(node_nu_list) > 0:
             # EIP: Aggregate NIG parameters from multiple readouts if needed

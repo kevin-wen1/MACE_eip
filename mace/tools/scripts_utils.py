@@ -317,6 +317,9 @@ def extract_config_mace_model(model: torch.nn.Module) -> Dict[str, Any]:
         "atomic_inter_scale": scale.cpu().numpy(),
         "atomic_inter_shift": shift.cpu().numpy(),
         "heads": heads,
+        "use_uncertainty": (
+            model.use_uncertainty if hasattr(model, "use_uncertainty") else False
+        ),
     }
     if model.__class__.__name__ == "AtomicDielectricMACE":
         config["use_polarizability"] = model.use_polarizability
@@ -663,7 +666,8 @@ def get_loss_fn(
 ) -> torch.nn.Module:
     if args.loss == "weighted":
         loss_fn = modules.WeightedEnergyForcesLoss(
-            energy_weight=args.energy_weight, forces_weight=args.forces_weight
+            energy_weight=args.energy_weight,
+            forces_weight=args.forces_weight,
         )
     elif args.loss == "uncertainty_weighted":
         from mace.modules.loss_uncertainty import UncertaintyWeightedEnergyForcesLoss
@@ -738,7 +742,10 @@ def get_loss_fn(
             dipole_weight=args.dipole_weight,
         )
     else:
-        loss_fn = modules.WeightedEnergyForcesLoss(energy_weight=1.0, forces_weight=1.0)
+        loss_fn = modules.WeightedEnergyForcesLoss(
+            energy_weight=1.0,
+            forces_weight=1.0,
+        )
     return loss_fn
 
 
@@ -943,7 +950,24 @@ def get_optimizer(
         _param_options = {k: v for k, v in param_options.items() if k != "amsgrad"}
         _param_options.pop("betas", None)
         optimizer = adamw_schedulefree.AdamWScheduleFree(
-            **_param_options, betas=(args.beta1_schedulefree, args.beta2_schedulefree)
+            **_param_options,
+            betas=(args.beta1_schedulefree, args.beta2_schedulefree),
+            warmup_steps=args.schedulefree_warmup_steps,
+        )
+    elif args.optimizer == "soap":
+        from mace.tools.soap import SOAP
+
+        _param_options = {k: v for k, v in param_options.items() if k != "amsgrad"}
+        _param_options.pop("betas", None)
+        optimizer = SOAP(
+            **_param_options,
+            betas=(args.beta1_soap, args.beta2_soap),
+            shampoo_beta=args.soap_shampoo_beta,
+            precondition_frequency=args.soap_precondition_frequency,
+            max_precond_dim=args.soap_max_precond_dim,
+            merge_dims=args.soap_merge_dims,
+            precondition_1d=args.soap_precondition_1d,
+            normalize_grads=args.soap_normalize_grads,
         )
     else:
         optimizer = torch.optim.Adam(**param_options)

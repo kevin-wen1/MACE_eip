@@ -127,7 +127,6 @@ def test_mace():
     assert torch.allclose(output1["energy"][0], output2["energy"][0])
     assert torch.allclose(output2["energy"][0], output2["energy"][1])
 
-
 def test_dipole_mace():
     # create dipole MACE model
     model_config = dict(

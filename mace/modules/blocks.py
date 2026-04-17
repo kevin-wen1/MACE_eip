@@ -106,49 +106,49 @@ class NonLinearReadoutBlock(torch.nn.Module):
         self.linear_2 = Linear(
             irreps_in=self.hidden_irreps, irreps_out=irrep_out, cueq_config=cueq_config
         )
-        # EIP: Add 3 scalar NIG parameters per atom (nu, alpha, beta)
-        # These are isotropic (rotation-invariant) uncertainty parameters
-        # Output: 3 scalars per atom, NOT per force component
+        # Keep the uncertainty heads defined unconditionally so TorchScript can
+        # compile the module regardless of whether the feature is enabled.
+        self.linear_nu = Linear(
+            irreps_in=self.hidden_irreps,
+            irreps_out=o3.Irreps("1x0e"),
+            cueq_config=cueq_config,
+        )
+        self.linear_alpha = Linear(
+            irreps_in=self.hidden_irreps,
+            irreps_out=o3.Irreps("1x0e"),
+            cueq_config=cueq_config,
+        )
+        self.linear_beta = Linear(
+            irreps_in=self.hidden_irreps,
+            irreps_out=o3.Irreps("1x0e"),
+            cueq_config=cueq_config,
+        )
+
         if use_uncertainty:
-            # Extract only scalar (L=0) features for rotation invariance
-            # Output 3 scalars: nu, alpha, beta
-            uncertainty_irreps = o3.Irreps("3x0e")  # 3 scalars
-
-            self.linear_nu = Linear(
-                irreps_in=self.hidden_irreps,
-                irreps_out=o3.Irreps("1x0e"),  # 1 scalar for nu
-                cueq_config=cueq_config
-            )
-            self.linear_alpha = Linear(
-                irreps_in=self.hidden_irreps,
-                irreps_out=o3.Irreps("1x0e"),  # 1 scalar for alpha
-                cueq_config=cueq_config
-            )
-            self.linear_beta = Linear(
-                irreps_in=self.hidden_irreps,
-                irreps_out=o3.Irreps("1x0e"),  # 1 scalar for beta
-                cueq_config=cueq_config
-            )
-
             # Initialize NIG parameter heads
             for param_name, init_bias in [
-                ('linear_nu', 1.0),      # nu initialized so softplus gives ~2
-                ('linear_alpha', 1.0),   # alpha initialized so softplus gives ~2
-                ('linear_beta', -3.0),   # beta initialized for reasonable initial uncertainty
+                ("linear_nu", 1.0),      # nu initialized so softplus gives ~2
+                ("linear_alpha", 1.0),   # alpha initialized so softplus gives ~2
+                ("linear_beta", -3.0),   # beta initialized for reasonable initial uncertainty
             ]:
                 param_linear = getattr(self, param_name)
-                if hasattr(param_linear, 'weight'):
+                if hasattr(param_linear, "weight"):
                     w = param_linear.weight
                     if w.dim() >= 2:
-                        torch.nn.init.kaiming_normal_(w, mode='fan_in', nonlinearity='relu')
+                        torch.nn.init.kaiming_normal_(
+                            w, mode="fan_in", nonlinearity="relu"
+                        )
                     else:
                         torch.nn.init.normal_(w, mean=0.0, std=0.1)
-                if hasattr(param_linear, 'bias') and param_linear.bias is not None:
+                if hasattr(param_linear, "bias") and param_linear.bias is not None:
                     torch.nn.init.constant_(param_linear.bias, init_bias)
 
     def forward(
         self, x: torch.Tensor, heads: Optional[torch.Tensor] = None
-    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:  # [n_nodes, irreps]  # [..., ]
+    ) -> Union[
+        torch.Tensor,
+        Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    ]:  # [n_nodes, irreps]  # [..., ]
         x = self.non_linearity(self.linear_1(x))
         if hasattr(self, "num_heads"):
             if self.num_heads > 1 and heads is not None:
@@ -175,7 +175,6 @@ class NonLinearReadoutBlock(torch.nn.Module):
 
             return output, (nu, alpha, beta)
         return output
-
 
 @simplify_if_compile
 @compile_mode("script")

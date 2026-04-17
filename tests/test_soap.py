@@ -9,13 +9,7 @@ from e3nn import o3
 
 from mace import data, modules, tools
 from mace.tools import scripts_utils, torch_geometric
-
-try:
-    import schedulefree
-except ImportError:
-    pytest.skip(
-        "Skipping schedulefree tests due to ImportError", allow_module_level=True
-    )
+from mace.tools.soap import SOAP
 
 torch.set_default_dtype(torch.float64)
 
@@ -56,12 +50,8 @@ def create_mace(device: str, seed: int = 1702):
 def create_batch(device: str):
     from ase import build
 
-    size = 2
-    atoms = build.bulk("C", "diamond", a=3.567, cubic=True)
-    atoms_list = [atoms.repeat((size, size, size))]
-    print("Number of atoms", len(atoms_list[0]))
-
-    configs = [data.config_from_atoms(atoms) for atoms in atoms_list]
+    atoms = build.bulk("C", "diamond", a=3.567, cubic=True).repeat((2, 2, 2))
+    configs = [data.config_from_atoms(atoms)]
     data_loader = torch_geometric.dataloader.DataLoader(
         dataset=[
             data.AtomicData.from_config(config, z_table=table, cutoff=cutoff)
@@ -73,25 +63,18 @@ def create_batch(device: str):
     )
     batch = next(iter(data_loader))
     batch = batch.to(device)
-    batch = batch.to_dict()
-    return batch
+    return batch.to_dict()
 
 
-def do_optimization_step(
-    model,
-    optimizer,
-    device,
-):
+def do_optimization_step(model, optimizer, device):
     batch = create_batch(device)
     model.train()
-    optimizer.train()
     optimizer.zero_grad()
     output = model(batch, training=True, compute_force=False)
     loss = output["energy"].mean()
     loss.backward()
     optimizer.step()
     model.eval()
-    optimizer.eval()
 
 
 @pytest.mark.parametrize(
@@ -100,16 +83,20 @@ def do_optimization_step(
 )
 def test_can_load_checkpoint(device):
     model = create_mace(device)
-    optimizer = schedulefree.adamw_schedulefree.AdamWScheduleFree(model.parameters())
+    optimizer = SOAP(
+        model.parameters(),
+        lr=1e-3,
+        betas=(0.95, 0.95),
+        precondition_frequency=2,
+        weight_decay=0.0,
+    )
     args = MagicMock()
-    args.optimizer = "schedulefree"
+    args.optimizer = "soap"
     args.scheduler = "ExponentialLR"
     args.lr_scheduler_gamma = 0.9
     lr_scheduler = scripts_utils.LRScheduler(optimizer, args)
     with tempfile.TemporaryDirectory() as d:
-        checkpoint_handler = tools.CheckpointHandler(
-            directory=d, keep=False, tag="schedulefree"
-        )
+        checkpoint_handler = tools.CheckpointHandler(directory=d, keep=False, tag="soap")
         for _ in range(10):
             do_optimization_step(model, optimizer, device)
         batch = create_batch(device)

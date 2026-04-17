@@ -871,7 +871,7 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         help="Optimizer for parameter optimization",
         type=str,
         default="adam",
-        choices=["adam", "adamw", "schedulefree"],
+        choices=["adam", "adamw", "schedulefree", "soap"],
     )
     parser.add_argument(
         "--beta",
@@ -890,6 +890,60 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         help="Beta2 parameter for the ScheduleFree optimizer",
         type=float,
         default=0.98,
+    )
+    parser.add_argument(
+        "--schedulefree_warmup_steps",
+        help="Warmup steps for the ScheduleFree optimizer",
+        type=int,
+        default=0,
+    )
+    parser.add_argument(
+        "--beta1_soap",
+        help="Beta1 parameter for the SOAP optimizer",
+        type=float,
+        default=0.95,
+    )
+    parser.add_argument(
+        "--beta2_soap",
+        help="Beta2 parameter for the SOAP optimizer",
+        type=float,
+        default=0.95,
+    )
+    parser.add_argument(
+        "--soap_shampoo_beta",
+        help="Preconditioner EMA beta for the SOAP optimizer; -1 uses beta2_soap",
+        type=float,
+        default=-1.0,
+    )
+    parser.add_argument(
+        "--soap_precondition_frequency",
+        help="How often to update the SOAP preconditioner basis",
+        type=int,
+        default=10,
+    )
+    parser.add_argument(
+        "--soap_max_precond_dim",
+        help="Maximum tensor dimension to precondition in SOAP",
+        type=int,
+        default=10000,
+    )
+    parser.add_argument(
+        "--soap_merge_dims",
+        help="Merge tensor dimensions before SOAP preconditioning",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--soap_precondition_1d",
+        help="Enable SOAP preconditioning for 1D parameters",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--soap_normalize_grads",
+        help="Normalize layerwise gradients inside SOAP",
+        action="store_true",
+        default=False,
     )
     parser.add_argument("--batch_size", help="batch size", type=int, default=10)
     parser.add_argument(
