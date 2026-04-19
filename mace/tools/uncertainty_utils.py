@@ -3,9 +3,29 @@
 # Handles parameter initialization and shape matching
 ###########################################################################################
 
-import torch
 import logging
 from typing import Dict, Any
+
+import torch
+
+
+EIP_UNCERTAINTY_PARAM_NAMES = ("linear_nu", "linear_alpha", "linear_beta")
+LEGACY_UNCERTAINTY_PARAM_NAMES = ("linear_uncertainty",)
+ALL_UNCERTAINTY_PARAM_NAMES = (
+    EIP_UNCERTAINTY_PARAM_NAMES + LEGACY_UNCERTAINTY_PARAM_NAMES
+)
+
+
+def _has_eip_uncertainty(module: torch.nn.Module) -> bool:
+    return all(hasattr(module, name) for name in EIP_UNCERTAINTY_PARAM_NAMES)
+
+
+def _has_any_uncertainty(module: torch.nn.Module) -> bool:
+    return _has_eip_uncertainty(module) or hasattr(module, "linear_uncertainty")
+
+
+def _parameter_name_has_uncertainty(name: str) -> bool:
+    return any(param_name in name for param_name in ALL_UNCERTAINTY_PARAM_NAMES)
 
 
 def initialize_uncertainty_parameters(model: torch.nn.Module) -> None:
@@ -19,26 +39,33 @@ def initialize_uncertainty_parameters(model: torch.nn.Module) -> None:
         model: MACE model with use_uncertainty=True
     """
     for name, module in model.named_modules():
-        if hasattr(module, 'linear_uncertainty'):
-            logging.info(f"Initializing uncertainty parameters in {name}")
-            
-            # Get the linear layer
+        if _has_eip_uncertainty(module):
+            logging.info(f"Initializing EIP uncertainty parameters in {name}")
+            for param_name, init_bias in [
+                ("linear_nu", 1.0),
+                ("linear_alpha", 1.0),
+                ("linear_beta", -3.0),
+            ]:
+                linear_layer = getattr(module, param_name)
+                if hasattr(linear_layer, "weight") and linear_layer.weight is not None:
+                    torch.nn.init.kaiming_normal_(
+                        linear_layer.weight,
+                        mode="fan_in",
+                        nonlinearity="relu",
+                    )
+                if hasattr(linear_layer, "bias") and linear_layer.bias is not None:
+                    torch.nn.init.constant_(linear_layer.bias, init_bias)
+        elif hasattr(module, "linear_uncertainty"):
+            logging.info(f"Initializing legacy uncertainty parameters in {name}")
             linear_layer = module.linear_uncertainty
-            
-            # Initialize weights with Kaiming normal (good for ReLU-like activations)
-            if hasattr(linear_layer, 'weight') and linear_layer.weight is not None:
+            if hasattr(linear_layer, "weight") and linear_layer.weight is not None:
                 torch.nn.init.kaiming_normal_(
-                    linear_layer.weight, 
-                    mode='fan_in', 
-                    nonlinearity='relu'
+                    linear_layer.weight,
+                    mode="fan_in",
+                    nonlinearity="relu",
                 )
-                logging.info(f"  - Initialized weights with Kaiming normal")
-            
-            # Initialize bias to small negative value
-            # This makes initial log_var negative, so initial variance is small
-            if hasattr(linear_layer, 'bias') and linear_layer.bias is not None:
+            if hasattr(linear_layer, "bias") and linear_layer.bias is not None:
                 torch.nn.init.constant_(linear_layer.bias, -1.0)
-                logging.info(f"  - Initialized bias to -1.0 (small initial variance)")
 
 
 def load_pretrained_with_uncertainty(
@@ -70,7 +97,7 @@ def load_pretrained_with_uncertainty(
     
     # Check if model already has uncertainty
     has_uncertainty = any(
-        'linear_uncertainty' in name 
+        _parameter_name_has_uncertainty(name)
         for name, _ in pretrained_model.named_parameters()
     )
     
@@ -126,7 +153,7 @@ def transfer_weights_with_uncertainty(
                 skipped += 1
         else:
             # This is expected for uncertainty parameters
-            if 'uncertainty' not in name:
+            if not _parameter_name_has_uncertainty(name):
                 logging.warning(f"Parameter {name} not found in target model")
             skipped += 1
     
@@ -154,8 +181,7 @@ def check_model_compatibility(
         Dictionary with compatibility information
     """
     has_uncertainty = any(
-        'linear_uncertainty' in name 
-        for name, _ in model.named_parameters()
+        _parameter_name_has_uncertainty(name) for name, _ in model.named_parameters()
     )
     
     model_has_flag = hasattr(model, 'use_uncertainty') and model.use_uncertainty

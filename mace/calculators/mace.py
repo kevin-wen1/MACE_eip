@@ -60,6 +60,31 @@ def get_model_dtype(model: torch.nn.Module) -> torch.dtype:
     raise ValueError(f"Unknown dtype {mode_dtype}")
 
 
+def _load_model_with_map_location(model_path: Union[str, Path], map_location: str):
+    """
+    Load a serialized MACE model while forcing nested TorchScript modules to honor
+    the requested map_location as well.
+
+    Some e3nn-generated modules embed TorchScript blobs that call ``torch.jit.load``
+    during unpickling without forwarding ``map_location``. Models saved on CUDA can
+    therefore fail to load on CPU-only machines unless we patch in the missing
+    map_location here.
+    """
+    original_jit_load = torch.jit.load
+
+    def _jit_load_with_default_map_location(*args, **kwargs):
+        kwargs.setdefault("map_location", map_location)
+        return original_jit_load(*args, **kwargs)
+
+    torch.jit.load = _jit_load_with_default_map_location
+    try:
+        return torch.load(
+            f=model_path, map_location=map_location, weights_only=False
+        )
+    finally:
+        torch.jit.load = original_jit_load
+
+
 class MACECalculator(Calculator):
     """MACE ASE Calculator
     args:
@@ -204,7 +229,7 @@ class MACECalculator(Calculator):
 
             # Load models from files.
             self.models = [
-                torch.load(f=model_path, map_location=device)
+                _load_model_with_map_location(model_path=model_path, map_location=device)
                 for model_path in model_paths
             ]
 
