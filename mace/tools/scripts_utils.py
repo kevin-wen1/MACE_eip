@@ -664,6 +664,9 @@ def get_loss_fn(
     dipole_only: bool,
     compute_dipole: bool,
 ) -> torch.nn.Module:
+    stage_one_use_uncertainty = resolve_stage_uncertainty_usage(
+        args, stage_name="stage_one"
+    )
     if args.loss == "weighted":
         loss_fn = modules.WeightedEnergyForcesLoss(
             energy_weight=args.energy_weight,
@@ -674,7 +677,7 @@ def get_loss_fn(
         loss_fn = UncertaintyWeightedEnergyForcesLoss(
             energy_weight=args.energy_weight,
             forces_weight=args.forces_weight,
-            use_uncertainty=args.use_uncertainty,
+            use_uncertainty=stage_one_use_uncertainty,
             quantile=getattr(args, 'eip_quantile', 0.5),
             lambda_reg=getattr(args, 'eip_lambda_reg', 0.01),
         )
@@ -687,13 +690,13 @@ def get_loss_fn(
             virials_weight=args.virials_weight,
         )
     elif args.loss == "stress":
-        if hasattr(args, 'use_uncertainty') and args.use_uncertainty:
+        if hasattr(args, "use_uncertainty") and args.use_uncertainty:
             from mace.modules.loss_uncertainty import UncertaintyWeightedEnergyForcesStressLoss
             loss_fn = UncertaintyWeightedEnergyForcesStressLoss(
                 energy_weight=args.energy_weight,
                 forces_weight=args.forces_weight,
                 stress_weight=args.stress_weight,
-                use_uncertainty=args.use_uncertainty,
+                use_uncertainty=stage_one_use_uncertainty,
                 quantile=getattr(args, 'eip_quantile', 0.5),
                 lambda_reg=getattr(args, 'eip_lambda_reg', 0.01),
             )
@@ -749,6 +752,24 @@ def get_loss_fn(
     return loss_fn
 
 
+def resolve_stage_uncertainty_usage(
+    args: argparse.Namespace, stage_name: str
+) -> bool:
+    mode_attr = f"{stage_name}_uncertainty_mode"
+    mode = getattr(args, mode_attr, "inherit")
+    if mode == "inherit":
+        return bool(getattr(args, "use_uncertainty", False))
+    if mode == "on":
+        if not getattr(args, "use_uncertainty", False):
+            raise ValueError(
+                f"{mode_attr}=on requires --use_uncertainty so the model builds uncertainty heads."
+            )
+        return True
+    if mode == "off":
+        return False
+    raise ValueError(f"Unknown {mode_attr}: {mode}")
+
+
 def get_swa(
     args: argparse.Namespace,
     model: torch.nn.Module,
@@ -768,6 +789,9 @@ def get_swa(
             swas[-1] = False
     if args.loss == "forces_only":
         raise ValueError("Can not select Stage Two with forces only loss.")
+    stage_two_use_uncertainty = resolve_stage_uncertainty_usage(
+        args, stage_name="stage_two"
+    )
     if args.loss == "virials":
         loss_fn_energy = modules.WeightedEnergyForcesVirialsLoss(
             energy_weight=args.swa_energy_weight,
@@ -778,13 +802,40 @@ def get_swa(
             f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight},  virials_weight: {args.swa_virials_weight} and learning rate : {args.swa_lr}"
         )
     elif args.loss == "stress":
-        loss_fn_energy = modules.WeightedEnergyForcesStressLoss(
-            energy_weight=args.swa_energy_weight,
-            forces_weight=args.swa_forces_weight,
-            stress_weight=args.swa_stress_weight,
-        )
+        if hasattr(args, "use_uncertainty") and args.use_uncertainty:
+            from mace.modules.loss_uncertainty import (
+                UncertaintyWeightedEnergyForcesStressLoss,
+            )
+
+            loss_fn_energy = UncertaintyWeightedEnergyForcesStressLoss(
+                energy_weight=args.swa_energy_weight,
+                forces_weight=args.swa_forces_weight,
+                stress_weight=args.swa_stress_weight,
+                use_uncertainty=stage_two_use_uncertainty,
+                quantile=getattr(args, "eip_quantile", 0.5),
+                lambda_reg=getattr(args, "eip_lambda_reg", 0.01),
+            )
+        else:
+            loss_fn_energy = modules.WeightedEnergyForcesStressLoss(
+                energy_weight=args.swa_energy_weight,
+                forces_weight=args.swa_forces_weight,
+                stress_weight=args.swa_stress_weight,
+            )
         logging.info(
             f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight}, stress weight : {args.swa_stress_weight} and learning rate : {args.swa_lr}"
+        )
+    elif args.loss == "uncertainty_weighted":
+        from mace.modules.loss_uncertainty import UncertaintyWeightedEnergyForcesLoss
+
+        loss_fn_energy = UncertaintyWeightedEnergyForcesLoss(
+            energy_weight=args.swa_energy_weight,
+            forces_weight=args.swa_forces_weight,
+            use_uncertainty=stage_two_use_uncertainty,
+            quantile=getattr(args, "eip_quantile", 0.5),
+            lambda_reg=getattr(args, "eip_lambda_reg", 0.01),
+        )
+        logging.info(
+            f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, with energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight} and learning rate : {args.swa_lr}"
         )
     elif args.loss == "dipole_polar":
         loss_fn_energy = modules.DipolePolarLoss(

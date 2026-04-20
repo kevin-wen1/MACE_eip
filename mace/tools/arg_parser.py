@@ -774,6 +774,20 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         default=False,
     )
     parser.add_argument(
+        "--stage_one_uncertainty_mode",
+        help="whether Stage One loss should use uncertainty when the model has uncertainty heads",
+        type=str,
+        default="inherit",
+        choices=["inherit", "on", "off"],
+    )
+    parser.add_argument(
+        "--stage_two_uncertainty_mode",
+        help="whether Stage Two loss should use uncertainty when the model has uncertainty heads",
+        type=str,
+        default="inherit",
+        choices=["inherit", "on", "off"],
+    )
+    parser.add_argument(
         "--eip_quantile",
         help="quantile for EIP quantile regression (default: 0.5 for median)",
         type=float,
