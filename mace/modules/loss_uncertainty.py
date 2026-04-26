@@ -259,14 +259,66 @@ def uncertainty_weighted_stress_loss(
     return weighted_mean_squared_stress(ref, pred, ddp)
 
 
+def uncertainty_universal_energy_loss(
+    ref: Batch,
+    pred: TensorDict,
+    huber_delta: float,
+    ddp: Optional[bool] = None,
+) -> torch.Tensor:
+    """Universal-style robust per-atom energy loss without EIP weighting."""
+    num_atoms = ref.ptr[1:] - ref.ptr[:-1]
+    configs_energy_weight = ref.energy_weight
+    if ddp:
+        raw_loss = F.huber_loss(
+            configs_energy_weight * ref["energy"] / num_atoms,
+            configs_energy_weight * pred["energy"] / num_atoms,
+            reduction="none",
+            delta=huber_delta,
+        )
+        return reduce_loss(raw_loss, ddp)
+    return F.huber_loss(
+        configs_energy_weight * ref["energy"] / num_atoms,
+        configs_energy_weight * pred["energy"] / num_atoms,
+        reduction="mean",
+        delta=huber_delta,
+    )
+
+
+def uncertainty_universal_stress_loss(
+    ref: Batch,
+    pred: TensorDict,
+    huber_delta: float,
+    ddp: Optional[bool] = None,
+) -> torch.Tensor:
+    """
+    Universal-style robust stress loss.
+
+    Stress keeps the robust Huber treatment from UniversalLoss because this
+    model does not predict a dedicated stress uncertainty.
+    """
+    configs_stress_weight = ref.stress_weight.view(-1, 1, 1)
+    if ddp:
+        raw_loss = F.huber_loss(
+            configs_stress_weight * ref["stress"],
+            configs_stress_weight * pred["stress"],
+            reduction="none",
+            delta=huber_delta,
+        )
+        return reduce_loss(raw_loss, ddp)
+    return F.huber_loss(
+        configs_stress_weight * ref["stress"],
+        configs_stress_weight * pred["stress"],
+        reduction="mean",
+        delta=huber_delta,
+    )
+
+
 class UncertaintyWeightedEnergyForcesLoss(torch.nn.Module):
     """
-    Combined energy and force loss with EIP evidential uncertainty.
+    Combined energy and force loss with EIP evidential uncertainty for forces.
     
-    This loss function implements the complete EIP framework where:
-    - Energy and force predictions include NIG uncertainty parameters
-    - Loss combines NLL with evidence regularizer
-    - The loss automatically balances based on prediction confidence
+    Energy keeps the standard weighted MSE term. Forces use the EIP NLL plus
+    evidence regularizer when uncertainty is enabled.
     """
     
     def __init__(
@@ -293,16 +345,17 @@ class UncertaintyWeightedEnergyForcesLoss(torch.nn.Module):
     def forward(
         self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
     ) -> torch.Tensor:
+        from mace.modules.loss import weighted_mean_squared_error_energy
+
+        loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
         if self.use_uncertainty:
-            loss_energy = evidential_energy_loss(ref, pred, ddp, self.quantile, self.lambda_reg)
-            loss_forces = evidential_forces_loss(ref, pred, ddp, self.quantile, self.lambda_reg)
+            loss_forces = evidential_forces_loss(
+                ref, pred, ddp, self.quantile, self.lambda_reg
+            )
         else:
             # Fallback to standard loss
-            from mace.modules.loss import (
-                weighted_mean_squared_error_energy,
-                mean_squared_error_forces,
-            )
-            loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
+            from mace.modules.loss import mean_squared_error_forces
+
             loss_forces = mean_squared_error_forces(ref, pred, ddp)
         
         return self.energy_weight * loss_energy + self.forces_weight * loss_forces
@@ -317,9 +370,10 @@ class UncertaintyWeightedEnergyForcesLoss(torch.nn.Module):
 
 class UncertaintyWeightedEnergyForcesStressLoss(torch.nn.Module):
     """
-    Combined energy, force, and stress loss with EIP evidential uncertainty.
+    Combined energy, force, and stress loss with EIP force uncertainty.
     
-    Note: Stress currently uses standard MSE loss (no uncertainty weighting yet).
+    Energy and stress use standard losses. Forces use the EIP evidential loss
+    when uncertainty is enabled.
     """
     
     def __init__(
@@ -351,18 +405,20 @@ class UncertaintyWeightedEnergyForcesStressLoss(torch.nn.Module):
     def forward(
         self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
     ) -> torch.Tensor:
+        from mace.modules.loss import weighted_mean_squared_error_energy
+
+        loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
         if self.use_uncertainty:
-            loss_energy = evidential_energy_loss(ref, pred, ddp, self.quantile, self.lambda_reg)
-            loss_forces = evidential_forces_loss(ref, pred, ddp, self.quantile, self.lambda_reg)
+            loss_forces = evidential_forces_loss(
+                ref, pred, ddp, self.quantile, self.lambda_reg
+            )
             loss_stress = uncertainty_weighted_stress_loss(ref, pred, ddp)
         else:
             # Fallback to standard loss
             from mace.modules.loss import (
-                weighted_mean_squared_error_energy,
                 mean_squared_error_forces,
                 weighted_mean_squared_stress,
             )
-            loss_energy = weighted_mean_squared_error_energy(ref, pred, ddp)
             loss_forces = mean_squared_error_forces(ref, pred, ddp)
             loss_stress = weighted_mean_squared_stress(ref, pred, ddp)
         
@@ -378,4 +434,78 @@ class UncertaintyWeightedEnergyForcesStressLoss(torch.nn.Module):
             f"forces_weight={self.forces_weight:.3f}, stress_weight={self.stress_weight:.3f}, "
             f"use_uncertainty={self.use_uncertainty}, quantile={self.quantile:.2f}, "
             f"lambda_reg={self.lambda_reg:.4f})"
+        )
+
+
+class UncertaintyUniversalLoss(torch.nn.Module):
+    """
+    Universal training with EIP uncertainty for forces.
+
+    Energy and stress keep the Universal-style Huber losses. Forces use the
+    evidential loss when uncertainty is enabled.
+    """
+
+    def __init__(
+        self,
+        energy_weight: float = 1.0,
+        forces_weight: float = 1.0,
+        stress_weight: float = 1.0,
+        huber_delta: float = 0.01,
+        use_uncertainty: bool = True,
+        quantile: float = 0.5,
+        lambda_reg: float = 0.01,
+    ) -> None:
+        super().__init__()
+        self.register_buffer(
+            "energy_weight",
+            torch.tensor(energy_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "forces_weight",
+            torch.tensor(forces_weight, dtype=torch.get_default_dtype()),
+        )
+        self.register_buffer(
+            "stress_weight",
+            torch.tensor(stress_weight, dtype=torch.get_default_dtype()),
+        )
+        self.huber_delta = huber_delta
+        self.use_uncertainty = use_uncertainty
+        self.quantile = quantile
+        self.lambda_reg = lambda_reg
+
+    def forward(
+        self, ref: Batch, pred: TensorDict, ddp: Optional[bool] = None
+    ) -> torch.Tensor:
+        loss_energy = uncertainty_universal_energy_loss(
+            ref, pred, self.huber_delta, ddp
+        )
+        if self.use_uncertainty:
+            loss_forces = evidential_forces_loss(
+                ref, pred, ddp, self.quantile, self.lambda_reg
+            )
+            loss_stress = uncertainty_universal_stress_loss(
+                ref, pred, self.huber_delta, ddp
+            )
+        else:
+            from mace.modules.loss import UniversalLoss
+
+            return UniversalLoss(
+                energy_weight=float(self.energy_weight),
+                forces_weight=float(self.forces_weight),
+                stress_weight=float(self.stress_weight),
+                huber_delta=self.huber_delta,
+            )(ref, pred, ddp)
+
+        return (
+            self.energy_weight * loss_energy
+            + self.forces_weight * loss_forces
+            + self.stress_weight * loss_stress
+        )
+
+    def __repr__(self):
+        return (
+            f"{self.__class__.__name__}(energy_weight={self.energy_weight:.3f}, "
+            f"forces_weight={self.forces_weight:.3f}, stress_weight={self.stress_weight:.3f}, "
+            f"huber_delta={self.huber_delta:.4f}, use_uncertainty={self.use_uncertainty}, "
+            f"quantile={self.quantile:.2f}, lambda_reg={self.lambda_reg:.4f})"
         )

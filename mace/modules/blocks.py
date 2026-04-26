@@ -108,19 +108,20 @@ class NonLinearReadoutBlock(torch.nn.Module):
         )
         # Keep the uncertainty heads defined unconditionally so TorchScript can
         # compile the module regardless of whether the feature is enabled.
+        uncertainty_irreps = o3.Irreps(f"{num_heads}x0e")
         self.linear_nu = Linear(
             irreps_in=self.hidden_irreps,
-            irreps_out=o3.Irreps("1x0e"),
+            irreps_out=uncertainty_irreps,
             cueq_config=cueq_config,
         )
         self.linear_alpha = Linear(
             irreps_in=self.hidden_irreps,
-            irreps_out=o3.Irreps("1x0e"),
+            irreps_out=uncertainty_irreps,
             cueq_config=cueq_config,
         )
         self.linear_beta = Linear(
             irreps_in=self.hidden_irreps,
-            irreps_out=o3.Irreps("1x0e"),
+            irreps_out=uncertainty_irreps,
             cueq_config=cueq_config,
         )
 
