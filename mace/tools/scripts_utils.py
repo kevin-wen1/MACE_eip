@@ -668,21 +668,10 @@ def get_loss_fn(
         args, stage_name="stage_one"
     )
     if args.loss == "weighted":
-        if getattr(args, "use_uncertainty", False):
-            from mace.modules.loss_uncertainty import UncertaintyWeightedEnergyForcesLoss
-
-            loss_fn = UncertaintyWeightedEnergyForcesLoss(
-                energy_weight=args.energy_weight,
-                forces_weight=args.forces_weight,
-                use_uncertainty=stage_one_use_uncertainty,
-                quantile=getattr(args, "eip_quantile", 0.5),
-                lambda_reg=getattr(args, "eip_lambda_reg", 0.01),
-            )
-        else:
-            loss_fn = modules.WeightedEnergyForcesLoss(
-                energy_weight=args.energy_weight,
-                forces_weight=args.forces_weight,
-            )
+        loss_fn = modules.WeightedEnergyForcesLoss(
+            energy_weight=args.energy_weight,
+            forces_weight=args.forces_weight,
+        )
     elif args.loss == "uncertainty_weighted":
         from mace.modules.loss_uncertainty import UncertaintyWeightedEnergyForcesLoss
         loss_fn = UncertaintyWeightedEnergyForcesLoss(
@@ -718,45 +707,19 @@ def get_loss_fn(
                 stress_weight=args.stress_weight,
             )
     elif args.loss == "huber":
-        if getattr(args, "use_uncertainty", False):
-            from mace.modules.loss_uncertainty import UncertaintyUniversalLoss
-
-            loss_fn = UncertaintyUniversalLoss(
-                energy_weight=args.energy_weight,
-                forces_weight=args.forces_weight,
-                stress_weight=args.stress_weight,
-                huber_delta=args.huber_delta,
-                use_uncertainty=stage_one_use_uncertainty,
-                quantile=getattr(args, "eip_quantile", 0.5),
-                lambda_reg=getattr(args, "eip_lambda_reg", 0.01),
-            )
-        else:
-            loss_fn = modules.WeightedHuberEnergyForcesStressLoss(
-                energy_weight=args.energy_weight,
-                forces_weight=args.forces_weight,
-                stress_weight=args.stress_weight,
-                huber_delta=args.huber_delta,
-            )
+        loss_fn = modules.WeightedHuberEnergyForcesStressLoss(
+            energy_weight=args.energy_weight,
+            forces_weight=args.forces_weight,
+            stress_weight=args.stress_weight,
+            huber_delta=args.huber_delta,
+        )
     elif args.loss == "universal":
-        if getattr(args, "use_uncertainty", False):
-            from mace.modules.loss_uncertainty import UncertaintyUniversalLoss
-
-            loss_fn = UncertaintyUniversalLoss(
-                energy_weight=args.energy_weight,
-                forces_weight=args.forces_weight,
-                stress_weight=args.stress_weight,
-                huber_delta=args.huber_delta,
-                use_uncertainty=stage_one_use_uncertainty,
-                quantile=getattr(args, "eip_quantile", 0.5),
-                lambda_reg=getattr(args, "eip_lambda_reg", 0.01),
-            )
-        else:
-            loss_fn = modules.UniversalLoss(
-                energy_weight=args.energy_weight,
-                forces_weight=args.forces_weight,
-                stress_weight=args.stress_weight,
-                huber_delta=args.huber_delta,
-            )
+        loss_fn = modules.UniversalLoss(
+            energy_weight=args.energy_weight,
+            forces_weight=args.forces_weight,
+            stress_weight=args.stress_weight,
+            huber_delta=args.huber_delta,
+        )
     elif args.loss == "l1l2energyforces":
         loss_fn = modules.WeightedEnergyForcesL1L2Loss(
             energy_weight=args.energy_weight,
@@ -891,68 +854,21 @@ def get_swa(
         logging.info(
             f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, with energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight}, dipole weight : {args.swa_dipole_weight} and learning rate : {args.swa_lr}"
         )
-    elif args.loss == "huber":
-        if getattr(args, "use_uncertainty", False):
-            from mace.modules.loss_uncertainty import UncertaintyUniversalLoss
-
-            loss_fn_energy = UncertaintyUniversalLoss(
-                energy_weight=args.swa_energy_weight,
-                forces_weight=args.swa_forces_weight,
-                stress_weight=args.swa_stress_weight,
-                huber_delta=args.huber_delta,
-                use_uncertainty=stage_two_use_uncertainty,
-                quantile=getattr(args, "eip_quantile", 0.5),
-                lambda_reg=getattr(args, "eip_lambda_reg", 0.01),
-            )
-        else:
-            loss_fn_energy = modules.WeightedHuberEnergyForcesStressLoss(
-                energy_weight=args.swa_energy_weight,
-                forces_weight=args.swa_forces_weight,
-                stress_weight=args.swa_stress_weight,
-                huber_delta=args.huber_delta,
-            )
-        logging.info(
-            f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, with energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight}, stress weight : {args.swa_stress_weight} and learning rate : {args.swa_lr}"
-        )
     elif args.loss == "universal":
-        if getattr(args, "use_uncertainty", False):
-            from mace.modules.loss_uncertainty import UncertaintyUniversalLoss
-
-            loss_fn_energy = UncertaintyUniversalLoss(
-                energy_weight=args.swa_energy_weight,
-                forces_weight=args.swa_forces_weight,
-                stress_weight=args.swa_stress_weight,
-                huber_delta=args.huber_delta,
-                use_uncertainty=stage_two_use_uncertainty,
-                quantile=getattr(args, "eip_quantile", 0.5),
-                lambda_reg=getattr(args, "eip_lambda_reg", 0.01),
-            )
-        else:
-            loss_fn_energy = modules.UniversalLoss(
-                energy_weight=args.swa_energy_weight,
-                forces_weight=args.swa_forces_weight,
-                stress_weight=args.swa_stress_weight,
-                huber_delta=args.huber_delta,
-            )
+        loss_fn_energy = modules.UniversalLoss(
+            energy_weight=args.swa_energy_weight,
+            forces_weight=args.swa_forces_weight,
+            stress_weight=args.swa_stress_weight,
+            huber_delta=args.huber_delta,
+        )
         logging.info(
             f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, with energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight}, stress weight : {args.swa_stress_weight} and learning rate : {args.swa_lr}"
         )
     else:
-        if getattr(args, "use_uncertainty", False) and args.loss == "weighted":
-            from mace.modules.loss_uncertainty import UncertaintyWeightedEnergyForcesLoss
-
-            loss_fn_energy = UncertaintyWeightedEnergyForcesLoss(
-                energy_weight=args.swa_energy_weight,
-                forces_weight=args.swa_forces_weight,
-                use_uncertainty=stage_two_use_uncertainty,
-                quantile=getattr(args, "eip_quantile", 0.5),
-                lambda_reg=getattr(args, "eip_lambda_reg", 0.01),
-            )
-        else:
-            loss_fn_energy = modules.WeightedEnergyForcesLoss(
-                energy_weight=args.swa_energy_weight,
-                forces_weight=args.swa_forces_weight,
-            )
+        loss_fn_energy = modules.WeightedEnergyForcesLoss(
+            energy_weight=args.swa_energy_weight,
+            forces_weight=args.swa_forces_weight,
+        )
         logging.info(
             f"Stage Two (after {args.start_swa} epochs) with loss function: {loss_fn_energy}, with energy weight : {args.swa_energy_weight}, forces weight : {args.swa_forces_weight} and learning rate : {args.swa_lr}"
         )
